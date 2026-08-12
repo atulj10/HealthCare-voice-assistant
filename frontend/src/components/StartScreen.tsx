@@ -17,6 +17,12 @@ export default function StartScreen({ error, disabled, onStart }: StartScreenPro
         structured report afterwards.
       </p>
 
+      <p className="mt-4 max-w-md text-sm text-slate-500">
+        You can speak English or Hindi. The assistant automatically responds in
+        the language you use, and you can switch languages at any time during
+        the call.
+      </p>
+
       {error && (
         <div className="mt-6 w-full max-w-md rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}

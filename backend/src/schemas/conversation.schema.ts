@@ -11,6 +11,7 @@ export const extractedDataSchema = z.object({
 
 export const conversationResponseSchema = z.object({
   reply: z.string().min(1),
+  responseLanguage: z.enum(["en", "hi"]),
   extractedData: extractedDataSchema,
   nextField: z.string().nullable(),
   needsClarification: z.boolean(),

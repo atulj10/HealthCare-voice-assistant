@@ -1,11 +1,29 @@
 import type { CallState, HealthReport } from "../types/call";
-import { generateHealthReport } from "./gemini.service";
+import { llmService } from "./llm/llm.service";
+
+const LOCAL_SUMMARY = {
+  en: (count: number) =>
+    `The screening collected ${count} item${count === 1 ? "" : "s"} of health information before ending.`,
+  hi: (count: number) =>
+    `स्क्रीनिंग समाप्त होने से पहले स्वास्थ्य जानकारी की ${count} आइटम एकत्र की गईं।`,
+};
+
+const LOCAL_ENDED_EARLY = {
+  en: "The screening ended before enough information was collected.",
+  hi: "पर्याप्त जानकारी एकत्र होने से पहले स्क्रीनिंग समाप्त हो गई।",
+};
+
+const LOCAL_FOLLOW_UP = {
+  en: "Consider medical evaluation if symptoms persist or worsen.",
+  hi: "यदि लक्षण बने रहें या बढ़ें तो चिकित्सीय मूल्यांकन पर विचार करें।",
+};
 
 /**
  * Local fallback report built purely from collected data.
  * Used when Gemini is unavailable so the call can still finish gracefully.
  */
 export function buildLocalReport(state: CallState): HealthReport {
+  const language = state.language;
   const data = state.collectedData;
   const collectedCount = [
     data.name,
@@ -21,10 +39,8 @@ export function buildLocalReport(state: CallState): HealthReport {
 
   const summary =
     collectedCount > 0
-      ? `The screening collected ${collectedCount} item${
-          collectedCount === 1 ? "" : "s"
-        } of health information before ending.`
-      : "The screening ended before enough information was collected.";
+      ? LOCAL_SUMMARY[language](collectedCount)
+      : LOCAL_ENDED_EARLY[language];
 
   return {
     patientName: data.name,
@@ -32,10 +48,7 @@ export function buildLocalReport(state: CallState): HealthReport {
     keySymptoms: data.relatedSymptoms,
     duration: data.duration,
     severity: data.severity,
-    followUp:
-      data.mainConcern
-        ? ["Consider medical evaluation if symptoms persist or worsen."]
-        : [],
+    followUp: data.mainConcern ? [LOCAL_FOLLOW_UP[language]] : [],
     redFlags: [],
     otherRelevantInformation: data.otherRelevantInformation,
     informationCompleteness,
@@ -54,7 +67,7 @@ export async function generateReport(state: CallState): Promise<HealthReport> {
   const promise = (async (): Promise<HealthReport> => {
     try {
       console.log("[CALL] Generating report");
-      const report = await generateHealthReport(state);
+      const report = await llmService.generateHealthReport(state);
       console.log("[CALL] Report generated");
       return report;
     } catch (error) {

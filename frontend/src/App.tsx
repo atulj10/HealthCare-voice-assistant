@@ -6,14 +6,13 @@ import HealthReport from "./components/HealthReport";
 function App() {
   const voice = useVoiceCall();
 
-  const canStart = voice.status === "idle";
-  const failedBeforeCall = voice.status === "error" && !voice.callId;
+  const canStart = voice.status === "idle" || (voice.status === "error" && !voice.callStarted);
   const showReport = voice.status === "completed" && voice.report !== null;
 
   return (
     <div className="flex min-h-screen flex-col items-center bg-gradient-to-b from-slate-50 to-slate-100 px-4 py-10">
       <main className="flex w-full max-w-2xl flex-1 flex-col items-center">
-        {canStart || failedBeforeCall ? (
+        {canStart ? (
           <StartScreen
             error={voice.error}
             disabled={voice.status === "connecting"}
@@ -25,6 +24,8 @@ function App() {
           <CallScreen
             status={voice.status}
             error={voice.error}
+            language={voice.activeLanguage}
+            languageSwitchNotice={voice.languageSwitchNotice}
             messages={voice.messages}
             interimTranscript={voice.interimTranscript}
             userSpeaking={voice.userSpeaking}

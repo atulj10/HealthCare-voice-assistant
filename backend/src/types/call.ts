@@ -1,3 +1,5 @@
+import type { Language } from "../config/language";
+
 export type CallStatus = "active" | "ending" | "completed";
 
 export type MessageRole = "user" | "assistant";
@@ -36,7 +38,7 @@ export interface CallState {
   callId: string;
   status: CallStatus;
   createdAt: number;
-  language: "en";
+  language: Language;
   messages: ConversationMessage[];
   collectedData: CollectedData;
   askedQuestions: string[];

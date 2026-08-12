@@ -1,4 +1,5 @@
 import type { CallState, CollectedData } from "../types/call";
+import type { Language } from "../config/language";
 
 export function emptyCollectedData(): CollectedData {
   return {
@@ -11,12 +12,15 @@ export function emptyCollectedData(): CollectedData {
   };
 }
 
-export function createCallState(callId: string): CallState {
+export function createCallState(
+  callId: string,
+  language: Language = "en",
+): CallState {
   return {
     callId,
     status: "active",
     createdAt: Date.now(),
-    language: "en",
+    language,
     messages: [],
     collectedData: emptyCollectedData(),
     askedQuestions: [],

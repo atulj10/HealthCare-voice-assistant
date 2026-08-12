@@ -1,11 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createCall, fetchReport, getWsUrl } from "../services/api";
-import type { CallStatus, HealthReport, ServerMessage, TranscriptMessage } from "../types/call";
+import type {
+  CallStatus,
+  HealthReport,
+  Language,
+  ServerMessage,
+  TranscriptMessage,
+} from "../types/call";
 import { startMicCapture, type MicCapture } from "./micCapture";
 import { PlaybackQueue } from "./playbackQueue";
 
 const MIC_ERROR_MESSAGE = "Microphone permission is required to start the call.";
 const CONNECTION_ERROR_MESSAGE = "Connection to the voice service was lost.";
+const SWITCH_NOTICE_MS = 3000;
 
 function getAudioContext(): AudioContext {
   const Ctor =
@@ -19,6 +26,11 @@ function getAudioContext(): AudioContext {
   }
 }
 
+const LANGUAGE_LABEL: Record<Language, string> = {
+  en: "Switched to English",
+  hi: "Switched to Hindi",
+};
+
 export interface UseVoiceCall {
   status: CallStatus;
   error: string | null;
@@ -27,6 +39,9 @@ export interface UseVoiceCall {
   interimTranscript: string;
   userSpeaking: boolean;
   report: HealthReport | null;
+  activeLanguage: Language;
+  languageSwitchNotice: string | null;
+  callStarted: boolean;
   startCall: () => Promise<void>;
   endCall: () => void;
   reset: () => void;
@@ -40,9 +55,15 @@ export function useVoiceCall(): UseVoiceCall {
   const [interimTranscript, setInterimTranscript] = useState("");
   const [userSpeaking, setUserSpeaking] = useState(false);
   const [report, setReport] = useState<HealthReport | null>(null);
+  const [activeLanguage, setActiveLanguage] = useState<Language>("en");
+  const [languageSwitchNotice, setLanguageSwitchNotice] = useState<string | null>(
+    null,
+  );
+  const [callStarted, setCallStarted] = useState(false);
 
   const statusRef = useRef<CallStatus>(status);
   const callIdRef = useRef<string | null>(callId);
+  const switchNoticeTimerRef = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const micRef = useRef<MicCapture | null>(null);
@@ -55,6 +76,25 @@ export function useVoiceCall(): UseVoiceCall {
   useEffect(() => {
     callIdRef.current = callId;
   }, [callId]);
+
+  useEffect(() => {
+    return () => {
+      if (switchNoticeTimerRef.current !== null) {
+        window.clearTimeout(switchNoticeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showSwitchNotice = useCallback((language: Language) => {
+    if (switchNoticeTimerRef.current !== null) {
+      window.clearTimeout(switchNoticeTimerRef.current);
+    }
+    setLanguageSwitchNotice(LANGUAGE_LABEL[language]);
+    switchNoticeTimerRef.current = window.setTimeout(() => {
+      setLanguageSwitchNotice(null);
+      switchNoticeTimerRef.current = null;
+    }, SWITCH_NOTICE_MS);
+  }, []);
 
   const cleanupResources = useCallback(() => {
     micRef.current?.stop();
@@ -104,7 +144,17 @@ export function useVoiceCall(): UseVoiceCall {
 
       switch (msg.type) {
         case "call_started":
+          setCallStarted(true);
           setStatus("active");
+          if (msg.language === "en" || msg.language === "hi") {
+            setActiveLanguage(msg.language);
+          }
+          break;
+        case "language_changed":
+          if (msg.language === "en" || msg.language === "hi") {
+            setActiveLanguage(msg.language);
+            showSwitchNotice(msg.language);
+          }
           break;
         case "transcript_interim":
           setInterimTranscript(typeof msg.text === "string" ? msg.text : "");
@@ -158,7 +208,7 @@ export function useVoiceCall(): UseVoiceCall {
           break;
       }
     },
-    [refreshReport],
+    [refreshReport, showSwitchNotice],
   );
 
   const handleServerBinary = useCallback((data: ArrayBuffer) => {
@@ -170,6 +220,9 @@ export function useVoiceCall(): UseVoiceCall {
     setReport(null);
     setMessages([]);
     setInterimTranscript("");
+    setCallStarted(false);
+    setActiveLanguage("en");
+    setLanguageSwitchNotice(null);
     setStatus("connecting");
 
     let ctx: AudioContext;
@@ -226,12 +279,18 @@ export function useVoiceCall(): UseVoiceCall {
     };
 
     ws.onerror = () => {
-      setError(CONNECTION_ERROR_MESSAGE);
-      setStatus("error");
+      if (statusRef.current !== "error") {
+        setError(CONNECTION_ERROR_MESSAGE);
+        setStatus("error");
+      }
     };
 
     ws.onclose = () => {
-      if (statusRef.current !== "completed" && statusRef.current !== "ending") {
+      if (
+        statusRef.current !== "completed" &&
+        statusRef.current !== "ending" &&
+        statusRef.current !== "error"
+      ) {
         setError(CONNECTION_ERROR_MESSAGE);
         setStatus("error");
       }
@@ -252,6 +311,10 @@ export function useVoiceCall(): UseVoiceCall {
 
   const reset = useCallback(() => {
     cleanupResources();
+    if (switchNoticeTimerRef.current !== null) {
+      window.clearTimeout(switchNoticeTimerRef.current);
+      switchNoticeTimerRef.current = null;
+    }
     setStatus("idle");
     setError(null);
     setCallId(null);
@@ -259,6 +322,9 @@ export function useVoiceCall(): UseVoiceCall {
     setInterimTranscript("");
     setUserSpeaking(false);
     setReport(null);
+    setCallStarted(false);
+    setActiveLanguage("en");
+    setLanguageSwitchNotice(null);
   }, [cleanupResources]);
 
   useEffect(() => {
@@ -273,6 +339,9 @@ export function useVoiceCall(): UseVoiceCall {
     interimTranscript,
     userSpeaking,
     report,
+    activeLanguage,
+    languageSwitchNotice,
+    callStarted,
     startCall,
     endCall,
     reset,

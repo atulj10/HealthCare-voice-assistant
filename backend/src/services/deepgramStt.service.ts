@@ -48,7 +48,7 @@ export class DeepgramSttService {
     const client = createClient(env.DEEPGRAM_API_KEY);
     const connection = client.listen.live({
       model: env.DEEPGRAM_STT_MODEL,
-      language: "en-US",
+      language: env.DEEPGRAM_STT_LANGUAGE,
       encoding: "linear16",
       sample_rate: env.TTS_SAMPLE_RATE,
       channels: 1,

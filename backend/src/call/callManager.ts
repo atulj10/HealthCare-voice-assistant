@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { CallState, CallStatus } from "../types/call";
+import type { Language } from "../config/language";
 import { createCallState } from "./callState";
 
 const STALE_CALL_MS = 30 * 60 * 1000;
 
 const calls = new Map<string, CallState>();
 
-export function createCall(): CallState {
-  const call = createCallState(randomUUID());
+export function createCall(language: Language = "en"): CallState {
+  const call = createCallState(randomUUID(), language);
   calls.set(call.callId, call);
   console.log(`[CALL] Call started (${call.callId})`);
   return call;

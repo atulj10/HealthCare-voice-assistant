@@ -1,3 +1,5 @@
+export type Language = "en" | "hi";
+
 export type CallStatus =
   | "idle"
   | "connecting"

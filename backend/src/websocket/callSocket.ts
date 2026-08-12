@@ -6,36 +6,39 @@ import {
   addQuestion,
   mergeExtractedData,
 } from "../call/callState";
+import { env } from "../config/env";
+import { parseLanguage, type Language } from "../config/language";
+import {
+  FALLBACK_MESSAGES,
+  LOCALIZED_ERRORS,
+  SCREENING_GREETINGS,
+} from "../config/screeningGreeting";
 import { DeepgramSttService } from "../services/deepgramStt.service";
-import { DeepgramTtsService } from "../services/deepgramTts.service";
-import { generateConversationTurn } from "../services/gemini.service";
+import { ElevenLabsProvider } from "../services/tts/elevenlabs.provider";
+import { TtsService } from "../services/tts/tts.service";
+import { llmService } from "../services/llm/llm.service";
 import { generateReport } from "../services/report.service";
 import { toErrorMessage } from "../utils/errors";
-
-const GREETING =
-  "Hello! I'm your health screening assistant. I'll ask you a few questions about your current health concern. What is your name?";
-
-const FALLBACK_EMPTY = "I didn't quite catch that. Could you please repeat?";
-const FALLBACK_ERROR =
-  "I'm sorry, I had trouble processing that. Could you please repeat?";
 
 const WAIT_FOR_TURN_TIMEOUT_MS = 4000;
 const CLOSE_AFTER_MESSAGES_MS = 300;
 
 interface IncomingClientMessage {
   type?: unknown;
+  language?: unknown;
 }
 
 /**
  * Manages a single client WebSocket connection for one call.
  *
  * Wire protocol (frontend -> backend):
- *   { type: "start_call" }
+ *   { type: "start_call" }   // language is auto-detected, no manual selection
  *   { type: "end_call" }
  *   binary: raw linear16 PCM @16kHz mono microphone audio
  *
  * Wire protocol (backend -> frontend):
- *   { type: "call_started", callId }
+ *   { type: "call_started", callId, language }
+ *   { type: "language_changed", language }
  *   { type: "transcript_interim", text }
  *   { type: "transcript_final", text }
  *   { type: "user_speaking_start" }
@@ -46,15 +49,20 @@ interface IncomingClientMessage {
  *   { type: "report", report }
  *   { type: "call_ended" }
  *   { type: "error", message }
+ *
+ * STT uses a single Deepgram "multi" connection for the whole call. The LLM
+ * detects the language of each finalized user utterance and returns
+ * responseLanguage; that value drives the reply text and the ElevenLabs voice.
  */
 export class CallSocket {
   private readonly ws: WebSocket;
-  private readonly stt: DeepgramSttService;
-  private readonly tts: DeepgramTtsService;
+  private stt: DeepgramSttService | null = null;
+  private tts: TtsService | null = null;
 
   private call: CallState | null = null;
   private ending = false;
   private closed = false;
+  private failedToStart = false;
 
   private currentUtterance = "";
   private turnQueue: string[] = [];
@@ -65,31 +73,9 @@ export class CallSocket {
   constructor(ws: WebSocket, initialCallId?: string) {
     this.ws = ws;
 
-    this.stt = new DeepgramSttService({
-      onOpen: () => {
-        // Connection logging is handled inside the STT service.
-      },
-      onSpeechStarted: () => this.handleSpeechStarted(),
-      onInterimTranscript: (text) => this.send({ type: "transcript_interim", text }),
-      onFinalTranscript: (text) => {
-        this.currentUtterance = text;
-      },
-      onUtteranceEnd: () => this.handleUtteranceEnd(),
-      onError: (error) => {
-        console.error("[STT] error", toErrorMessage(error));
-        this.send({
-          type: "error",
-          message: "Speech recognition encountered an issue. Please try again.",
-        });
-      },
-      onClose: () => {},
-    });
-
-    this.tts = new DeepgramTtsService();
-
     this.ws.on("message", (data, isBinary) => {
       if (isBinary) {
-        this.stt.sendAudio(data as Buffer);
+        this.stt?.sendAudio(data as Buffer);
         return;
       }
       this.handleMessage(data.toString());
@@ -119,7 +105,7 @@ export class CallSocket {
     }
 
     if (parsed.type === "start_call") {
-      void this.startCall();
+      void this.startCall(parsed.language);
       return;
     }
 
@@ -131,27 +117,82 @@ export class CallSocket {
     // Unknown message types are ignored safely.
   }
 
-  private async startCall(): Promise<void> {
+  private async startCall(language: unknown): Promise<void> {
+    const lang = parseLanguage(language) ?? "en";
+
     if (!this.call) {
-      this.call = createCall();
+      this.call = createCall(lang);
+    } else {
+      this.call.language = lang;
     }
     if (this.call.status !== "active") {
       return;
     }
 
-    console.log(`[CALL] Starting voice session (${this.call.callId})`);
-    this.send({ type: "call_started", callId: this.call.callId });
+    const greeting = SCREENING_GREETINGS[this.call.language];
 
-    this.stt.connect();
-    try {
-      await this.tts.connect();
-    } catch (error) {
-      console.error("[TTS] connection failed", toErrorMessage(error));
+    console.log(
+      `[CALL] Starting voice session (${this.call.callId}, language: ${this.call.language})`,
+    );
+
+    this.createServices();
+
+    const ttsConfigError = this.tts!.getConfigurationError();
+    if (ttsConfigError) {
+      console.error(`[CALL] TTS not configured: ${ttsConfigError}`);
+      this.failedToStart = true;
+      this.send({
+        type: "error",
+        message: LOCALIZED_ERRORS[this.call.language].ttsUnavailable,
+      });
+      this.closeAfterError();
+      return;
     }
 
-    addMessage(this.call, "assistant", GREETING);
-    this.send({ type: "ai_message", text: GREETING });
-    await this.speakReply(GREETING);
+    this.send({
+      type: "call_started",
+      callId: this.call.callId,
+      language: this.call.language,
+    });
+
+    this.stt!.connect();
+
+    addMessage(this.call, "assistant", greeting);
+    this.send({ type: "ai_message", text: greeting });
+    await this.speakReply(greeting, this.call.language);
+  }
+
+  private createServices(): void {
+    this.stt = new DeepgramSttService({
+      onOpen: () => {
+        // Connection logging is handled inside the STT service.
+      },
+      onSpeechStarted: () => this.handleSpeechStarted(),
+      onInterimTranscript: (text) =>
+        this.send({ type: "transcript_interim", text }),
+      onFinalTranscript: (text) => {
+        this.currentUtterance = text;
+      },
+      onUtteranceEnd: () => this.handleUtteranceEnd(),
+      onError: (error) => {
+        console.error("[STT] error", toErrorMessage(error));
+        this.send({
+          type: "error",
+          message: FALLBACK_MESSAGES[this.call?.language ?? "en"].error,
+        });
+      },
+      onClose: () => {},
+    });
+
+    this.tts = new TtsService(new ElevenLabsProvider(env));
+  }
+
+  private closeAfterError(): void {
+    try {
+      this.ws.close();
+    } catch {
+      // ignore
+    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -194,55 +235,67 @@ export class CallSocket {
     this.send({ type: "transcript_final", text: utterance });
     addMessage(call, "user", utterance);
 
-    let reply = FALLBACK_EMPTY;
+    let reply = FALLBACK_MESSAGES[call.language].empty;
 
     try {
       console.log("[LLM] Processing turn");
-      const response = await generateConversationTurn(call, utterance);
+      const response = await llmService.generateConversationTurn(call, utterance);
       console.log("[LLM] Response generated");
 
       mergeExtractedData(call, response.extractedData);
       addQuestion(call, response.nextField);
 
-      if (response.needsClarification || !response.reply.trim()) {
-        reply = response.reply.trim() || FALLBACK_EMPTY;
-      } else {
-        reply = response.reply.trim();
+      const responseLanguage: Language =
+        response.responseLanguage === "hi" ? "hi" : "en";
+      if (responseLanguage !== call.language) {
+        console.log(
+          `[CALL] Conversation language switched: ${call.language} -> ${responseLanguage}`,
+        );
       }
+      call.language = responseLanguage;
+      this.send({ type: "language_changed", language: responseLanguage });
+
+      reply = response.reply.trim() || FALLBACK_MESSAGES[call.language].empty;
     } catch (error) {
-      console.error("[LLM] Gemini turn failed", error);
-      reply = FALLBACK_ERROR;
+      console.error("[LLM] turn failed", error);
+      reply = FALLBACK_MESSAGES[call.language].error;
     }
 
     if (this.ending) return;
 
     addMessage(call, "assistant", reply);
     this.send({ type: "ai_message", text: reply });
-    await this.speakReply(reply);
+    await this.speakReply(reply, call.language);
   }
 
-  private speakReply(text: string): Promise<void> {
+  private speakReply(text: string, language: Language): Promise<void> {
     return new Promise<void>((resolve) => {
       this.send({ type: "ai_speaking_start" });
       this.ttsActive = true;
 
-      this.tts.speak(text, {
-        onAudio: (chunk) => this.sendBinary(chunk),
-        onStart: () => {},
-        onComplete: () => {
-          this.ttsActive = false;
-          this.send({ type: "ai_speaking_end" });
-          resolve();
+      this.tts!.speak(
+        { text, language },
+        {
+          onAudio: (chunk) => this.sendBinary(chunk),
+          onStart: () => {},
+          onComplete: () => {
+            this.ttsActive = false;
+            this.send({ type: "ai_speaking_end" });
+            resolve();
+          },
+          onError: (error) => {
+            this.ttsActive = false;
+            this.send({ type: "ai_speaking_end" });
+            if (
+              error.message !== "TTS interrupted" &&
+              error.message !== "Interrupted by new speech"
+            ) {
+              console.error("[TTS] synthesis error", error.message);
+            }
+            resolve();
+          },
         },
-        onError: (error) => {
-          this.ttsActive = false;
-          this.send({ type: "ai_speaking_end" });
-          if (error.message !== "TTS interrupted") {
-            console.error("[TTS] synthesis error", error.message);
-          }
-          resolve();
-        },
-      });
+      );
     });
   }
 
@@ -255,7 +308,7 @@ export class CallSocket {
 
     if (this.ttsActive) {
       console.log("[CALL] User interrupted AI speech");
-      this.tts.interrupt();
+      this.tts?.interrupt();
       this.ttsActive = false;
       this.send({ type: "ai_speaking_end" });
     }
@@ -273,7 +326,7 @@ export class CallSocket {
     setCallStatus(call.callId, "ending");
     console.log("[CALL] Ending call");
 
-    this.stt.finalize();
+    this.stt?.finalize();
 
     if (this.turnInProgress) {
       await Promise.race([
@@ -312,7 +365,7 @@ export class CallSocket {
     this.closed = true;
 
     const call = this.call;
-    if (call && call.status === "active" && !this.ending) {
+    if (call && call.status === "active" && !this.ending && !this.failedToStart) {
       console.log("[CALL] Socket closed unexpectedly, finalizing call");
       this.ending = true;
       void generateReport(call).then((report) => {
@@ -325,8 +378,10 @@ export class CallSocket {
   }
 
   private cleanup(): void {
-    this.stt.close();
-    this.tts.close();
+    this.stt?.close();
+    this.tts?.close();
+    this.stt = null;
+    this.tts = null;
   }
 
   /* ------------------------------------------------------------------ */
