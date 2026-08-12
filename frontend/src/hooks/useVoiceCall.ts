@@ -19,11 +19,10 @@ function getAudioContext(): AudioContext {
     window.AudioContext ??
     (window as unknown as { webkitAudioContext: typeof AudioContext })
       .webkitAudioContext;
-  try {
-    return new Ctor({ sampleRate: 16000 });
-  } catch {
-    return new Ctor();
-  }
+  // Use the device's native sample rate. Forcing a 16kHz context makes the
+  // browser resample the whole output thread up to the device rate, which
+  // causes audible crackling on Windows.
+  return new Ctor();
 }
 
 const LANGUAGE_LABEL: Record<Language, string> = {

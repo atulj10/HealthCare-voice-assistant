@@ -12,6 +12,14 @@ import {
 export const ELEVENLABS_PROVIDER_NAME = "elevenlabs";
 
 /**
+ * Size of the frames emitted to `onChunk`, in bytes. 2560 bytes = 80ms of
+ * 16-bit mono PCM at 16kHz. Frames are always even-aligned so downstream
+ * consumers (WebSocket -> browser `Int16Array`) never see a partial 16-bit
+ * sample; odd-length raw HTTP chunks are buffered until a full frame exists.
+ */
+const TTS_STREAM_FRAME_BYTES = 2560;
+
+/**
  * Maps a call language to its configured ElevenLabs voice ID.
  * Returns null when the voice is not configured.
  */
@@ -146,11 +154,25 @@ export class ElevenLabsProvider implements TTSProvider {
     }
 
     const chunks: Buffer[] = [];
+    let pending = Buffer.alloc(0);
     try {
       for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
-        const buffer = Buffer.from(chunk);
-        chunks.push(buffer);
-        options?.onChunk?.(buffer);
+        pending = Buffer.concat([pending, Buffer.from(chunk)]);
+
+        while (pending.length >= TTS_STREAM_FRAME_BYTES) {
+          const frame = Buffer.from(pending.subarray(0, TTS_STREAM_FRAME_BYTES));
+          chunks.push(frame);
+          options?.onChunk?.(frame);
+          pending = pending.subarray(TTS_STREAM_FRAME_BYTES);
+        }
+      }
+
+      // Flush the remaining complete 16-bit samples (always an even byte count).
+      const remainder = Math.floor(pending.length / 2) * 2;
+      if (remainder > 0) {
+        const frame = Buffer.from(pending.subarray(0, remainder));
+        chunks.push(frame);
+        options?.onChunk?.(frame);
       }
     } catch (error) {
       if (options?.signal?.aborted) {
