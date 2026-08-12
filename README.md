@@ -1,4 +1,4 @@
-# Sasahyog — AI Health Screening Voice Assistant
+# AI Health Screening Voice Assistant
 
 **Real-time, bilingual (English/Hindi) AI health-screening voice call built with React, Node.js, Deepgram, Gemini/Cerebras, and ElevenLabs.**
 
@@ -39,7 +39,7 @@ The user clicks **Start Call**, grants microphone access, and speaks naturally i
 
 ## 1. Project Title
 
-# Sasahyog — AI Health Screening Voice Assistant
+# AI Health Screening Voice Assistant
 
 A web application where a user has a live, continuous-voice conversation with an AI agent that conducts a basic, non-diagnostic health-screening call. The user speaks naturally in **English or Hindi**, the AI understands, automatically responds in the same language, and a structured health report is generated at the end.
 
